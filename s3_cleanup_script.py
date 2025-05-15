@@ -3,6 +3,10 @@
 S3 Bucket Cleanup Script
 Deletes objects older than 90 days from a specified S3 bucket
 Suitable for AWS CloudShell and Lambda deployment
+
+How to use
+==========
+set env vars at cli " S3_BUCKET_NAME=testme DAYS_THRESHOLD=90 python3 s3_cleanup.py"
 """
 
 import boto3
