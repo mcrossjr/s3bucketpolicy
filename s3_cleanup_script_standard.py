@@ -88,6 +88,24 @@ class S3ObjectCleaner:
             logger.error(f"Error listing objects: {str(e)}")
             return []
 
+    def _escape_csv_field(self, field: str) -> str:
+        """Properly escape a field for CSV format"""
+        if field is None:
+            return ""
+        
+        field_str = str(field)
+        # If field contains comma, newline, or quote, wrap in quotes and escape internal quotes
+        if ',' in field_str or '\n' in field_str or '\r' in field_str or '"' in field_str:
+            # Escape internal quotes by doubling them
+            field_str = field_str.replace('"', '""')
+            return f'"{field_str}"'
+        return field_str
+
+    def _create_csv_line(self, fields: List[str]) -> str:
+        """Create a properly formatted CSV line"""
+        escaped_fields = [self._escape_csv_field(field) for field in fields]
+        return ','.join(escaped_fields) + '\n'
+
     def export_deletion_list(self, objects_to_delete: List[Dict], 
                            export_to_s3: bool = False, 
                            export_prefix: str = 'deletion-reports/') -> str:
@@ -105,40 +123,42 @@ class S3ObjectCleaner:
         total_size_bytes = sum(obj['Size'] for obj in objects_to_delete)
         
         try:
+            # Create CSV content
+            csv_content = ""
+            
+            # Add summary header as comments
+            csv_content += f"# S3 Deletion Report\n"
+            csv_content += f"# Export Timestamp: {export_timestamp}\n"
+            csv_content += f"# Bucket Name: {self.bucket_name}\n"
+            csv_content += f"# Total Objects to Delete: {len(objects_to_delete)}\n"
+            csv_content += f"# Total Size (Bytes): {total_size_bytes:,}\n"
+            csv_content += f"# Total Size (GB): {total_size_bytes / (1024**3):.2f}\n"
+            csv_content += "#\n"
+            
+            # Add CSV header row
+            csv_content += self._create_csv_line(['Object_Key', 'Size_Bytes', 'Size_MB', 'Last_Modified', 'ETag'])
+            
+            # Add data rows
+            for obj in objects_to_delete:
+                size_mb = obj['Size'] / (1024 * 1024)
+                etag_clean = obj['ETag'].strip('"') if obj.get('ETag') else ''
+                
+                row_data = [
+                    obj['Key'],
+                    str(obj['Size']),
+                    f"{size_mb:.2f}",
+                    str(obj['LastModified']),
+                    etag_clean
+                ]
+                csv_content += self._create_csv_line(row_data)
+            
             if export_to_s3:
-                # Export to S3 using StringIO buffer
-                csv_buffer = io.StringIO()
-                
-                # Write summary header
-                csv_buffer.write(f"# S3 Deletion Report\n")
-                csv_buffer.write(f"# Export Timestamp: {export_timestamp}\n")
-                csv_buffer.write(f"# Bucket Name: {self.bucket_name}\n")
-                csv_buffer.write(f"# Total Objects to Delete: {len(objects_to_delete)}\n")
-                csv_buffer.write(f"# Total Size (Bytes): {total_size_bytes:,}\n")
-                csv_buffer.write(f"# Total Size (GB): {total_size_bytes / (1024**3):.2f}\n")
-                csv_buffer.write("#\n")
-                
-                # Write CSV data using csv module
-                writer = csv.writer(csv_buffer)
-                writer.writerow(['Object_Key', 'Size_Bytes', 'Size_MB', 'Last_Modified', 'ETag'])
-                
-                for obj in objects_to_delete:
-                    size_mb = obj['Size'] / (1024 * 1024)
-                    etag_clean = obj['ETag'].strip('"') if obj['ETag'] else ''
-                    writer.writerow([
-                        obj['Key'],
-                        obj['Size'],
-                        f"{size_mb:.2f}",
-                        obj['LastModified'],
-                        etag_clean
-                    ])
-                
                 # Upload to S3
                 s3_key = f"{export_prefix}{filename}"
                 self.s3_client.put_object(
                     Bucket=self.bucket_name,
                     Key=s3_key,
-                    Body=csv_buffer.getvalue(),
+                    Body=csv_content,
                     ContentType='text/csv'
                 )
                 
@@ -148,30 +168,8 @@ class S3ObjectCleaner:
                 
             else:
                 # Export to local file
-                with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-                    # Write summary header as comments
-                    csvfile.write(f"# S3 Deletion Report\n")
-                    csvfile.write(f"# Export Timestamp: {export_timestamp}\n")
-                    csvfile.write(f"# Bucket Name: {self.bucket_name}\n")
-                    csvfile.write(f"# Total Objects to Delete: {len(objects_to_delete)}\n")
-                    csvfile.write(f"# Total Size (Bytes): {total_size_bytes:,}\n")
-                    csvfile.write(f"# Total Size (GB): {total_size_bytes / (1024**3):.2f}\n")
-                    csvfile.write("#\n")
-                    
-                    # Write CSV data using csv module
-                    writer = csv.writer(csvfile)
-                    writer.writerow(['Object_Key', 'Size_Bytes', 'Size_MB', 'Last_Modified', 'ETag'])
-                    
-                    for obj in objects_to_delete:
-                        size_mb = obj['Size'] / (1024 * 1024)
-                        etag_clean = obj['ETag'].strip('"') if obj['ETag'] else ''
-                        writer.writerow([
-                            obj['Key'],
-                            obj['Size'],
-                            f"{size_mb:.2f}",
-                            obj['LastModified'],
-                            etag_clean
-                        ])
+                with open(filename, 'w', encoding='utf-8') as csvfile:
+                    csvfile.write(csv_content)
                 
                 export_location = os.path.abspath(filename)
                 logger.info(f"Deletion list exported locally: {export_location}")
@@ -179,7 +177,7 @@ class S3ObjectCleaner:
                 
         except Exception as e:
             logger.error(f"Failed to export CSV: {str(e)}")
-            # Fallback to simple text export if CSV fails
+            # Fallback to simple text export
             try:
                 fallback_filename = filename.replace('.csv', '_fallback.txt')
                 with open(fallback_filename, 'w', encoding='utf-8') as f:
