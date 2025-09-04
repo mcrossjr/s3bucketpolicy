@@ -91,48 +91,95 @@ class S3ObjectCleaner:
     def export_deletion_list(self, objects_to_delete: List[Dict], 
                            export_to_s3: bool = False, 
                            export_prefix: str = 'deletion-reports/') -> str:
-        """Export list of files to be deleted"""
+        """Export list of files to be deleted as CSV"""
         if not objects_to_delete:
             logger.info("No objects to export")
             return ""
         
-        # Create export data
-        export_data = {
-            'export_timestamp': datetime.now(timezone.utc).isoformat(),
-            'bucket_name': self.bucket_name,
-            'total_objects_to_delete': len(objects_to_delete),
-            'total_size_bytes': sum(obj['Size'] for obj in objects_to_delete),
-            'objects': objects_to_delete
-        }
-        
         # Generate filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"s3_deletion_list_{self.bucket_name}_{timestamp}.json"
+        filename = f"s3_deletion_list_{self.bucket_name}_{timestamp}.csv"
+        
+        # CSV headers and summary info
+        export_timestamp = datetime.now(timezone.utc).isoformat()
+        total_size_bytes = sum(obj['Size'] for obj in objects_to_delete)
         
         if export_to_s3:
             # Export to S3
             try:
+                # Create CSV content in memory
+                csv_buffer = io.StringIO()
+                
+                # Write summary header
+                csv_buffer.write(f"# S3 Deletion Report\n")
+                csv_buffer.write(f"# Export Timestamp: {export_timestamp}\n")
+                csv_buffer.write(f"# Bucket Name: {self.bucket_name}\n")
+                csv_buffer.write(f"# Total Objects to Delete: {len(objects_to_delete)}\n")
+                csv_buffer.write(f"# Total Size (Bytes): {total_size_bytes:,}\n")
+                csv_buffer.write(f"# Total Size (GB): {total_size_bytes / (1024**3):.2f}\n")
+                csv_buffer.write("#\n")
+                
+                # Write CSV data
+                writer = csv.writer(csv_buffer)
+                writer.writerow(['Object_Key', 'Size_Bytes', 'Size_MB', 'Last_Modified', 'ETag'])
+                
+                for obj in objects_to_delete:
+                    size_mb = obj['Size'] / (1024 * 1024)
+                    writer.writerow([
+                        obj['Key'],
+                        obj['Size'],
+                        f"{size_mb:.2f}",
+                        obj['LastModified'],
+                        obj['ETag'].strip('"')
+                    ])
+                
+                # Upload to S3
                 s3_key = f"{export_prefix}{filename}"
                 self.s3_client.put_object(
                     Bucket=self.bucket_name,
                     Key=s3_key,
-                    Body=json.dumps(export_data, indent=2, default=str),
-                    ContentType='application/json'
+                    Body=csv_buffer.getvalue(),
+                    ContentType='text/csv'
                 )
+                
                 export_location = f"s3://{self.bucket_name}/{s3_key}"
                 logger.info(f"Deletion list exported to S3: {export_location}")
                 return export_location
+                
             except ClientError as e:
                 logger.error(f"Failed to export to S3: {str(e)}")
                 return ""
         else:
             # Export to local file
             try:
-                with open(filename, 'w') as f:
-                    json.dump(export_data, f, indent=2, default=str)
+                with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                    # Write summary header as comments
+                    csvfile.write(f"# S3 Deletion Report\n")
+                    csvfile.write(f"# Export Timestamp: {export_timestamp}\n")
+                    csvfile.write(f"# Bucket Name: {self.bucket_name}\n")
+                    csvfile.write(f"# Total Objects to Delete: {len(objects_to_delete)}\n")
+                    csvfile.write(f"# Total Size (Bytes): {total_size_bytes:,}\n")
+                    csvfile.write(f"# Total Size (GB): {total_size_bytes / (1024**3):.2f}\n")
+                    csvfile.write("#\n")
+                    
+                    # Write CSV data
+                    writer = csv.writer(csvfile)
+                    writer.writerow(['Object_Key', 'Size_Bytes', 'Size_MB', 'Last_Modified', 'ETag'])
+                    
+                    for obj in objects_to_delete:
+                        size_mb = obj['Size'] / (1024 * 1024)
+                        writer.writerow([
+                            obj['Key'],
+                            obj['Size'],
+                            f"{size_mb:.2f}",
+                            obj['LastModified'],
+                            obj['ETag'].strip('"')
+                        ])
+                
                 export_location = os.path.abspath(filename)
                 logger.info(f"Deletion list exported locally: {export_location}")
                 return export_location
+                
             except IOError as e:
                 logger.error(f"Failed to export locally: {str(e)}")
                 return ""
