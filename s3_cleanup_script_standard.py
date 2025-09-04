@@ -367,10 +367,13 @@ def main():
         # Summary
         logger.info(f"Operation completed:")
         logger.info(f"  Objects processed: {len(objects_to_delete)}")
+        logger.info(f"  Objects skipped (Sun/Wed): {len(cleaner.objects_skipped_by_day) if hasattr(cleaner, 'objects_skipped_by_day') else 0}")
         logger.info(f"  Successfully deleted: {deletion_result['deleted_count']}")
         logger.info(f"  Failed deletions: {deletion_result['failed_count']}")
         if export_location:
-            logger.info(f"  Export location: {export_location}")
+            logger.info(f"  Deletion list export: {export_location}")
+        if skipped_export_location:
+            logger.info(f"  Skipped objects export: {skipped_export_location}")
         
         if deletion_result['errors']:
             logger.error("Errors encountered during deletion:")
